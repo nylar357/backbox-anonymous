@@ -1,6 +1,7 @@
 backbox-anonymous
 =================
 
+All Credit to Raffele Forte 
 BackBox Script for Anonymous Internet Navigation
 
 This script is intended to set up your BackBox machine to guarantee
