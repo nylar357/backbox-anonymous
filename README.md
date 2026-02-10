@@ -31,6 +31,70 @@ sudo apt update
 sudo apt install tor macchanger bleachbit curl
 
 ```
+## 🤖 Run as a System Service (Optional)
+
+You can install this script as a systemd service to manage it in the background or have it start automatically on boot (not recommended for daily driving, but useful for specific operational modes).
+
+### 1. Install the Executable
+
+Move the script to a system binary location and remove the .sh extension:
+
+```
+sudo cp kali_anonymous.sh /usr/local/bin/kali-anonymous
+sudo chmod +x /usr/local/bin/kali-anonymous
+```
+
+### 2. Install the Service Unit
+
+Create the systemd service file:
+
+```
+sudo nano /etc/systemd/system/kali-anonymous.service
+```
+
+Paste the following configuration:
+
+```
+[Unit]
+Description=Kali Anonymous Mode (Tor Transparent Proxy & Spoofing)
+After=network-online.target tor.service
+Wants=network-online.target tor.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/kali-anonymous start
+ExecStop=/usr/local/bin/kali-anonymous stop
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### 3. Enable and Control
+
+Reload systemd and manage the service:
+
+### Reload systemd to recognize the new service
+```
+sudo systemctl daemon-reload
+```
+
+### Start the anonymization service
+```
+sudo systemctl start kali-anonymous
+```
+
+### Stop the service (restores normal networking)
+```
+sudo systemctl stop kali-anonymous
+```
+
+### Check status
+```
+sudo systemctl status kali-anonymous
+```
+
 
 ## 🛠️ Usage
 
