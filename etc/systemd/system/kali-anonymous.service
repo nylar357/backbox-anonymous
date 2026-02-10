@@ -1,0 +1,17 @@
+[Unit]
+Description=Kali Anonymous Mode (Tor Transparent Proxy & Spoofing)
+Documentation=https://github.com/your-repo/kali-anonymous
+After=network-online.target tor.service
+Wants=network-online.target tor.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/kali-anonymous start
+ExecStop=/usr/local/bin/kali-anonymous stop
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
