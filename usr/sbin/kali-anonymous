@@ -1,0 +1,235 @@
+#!/bin/bash
+
+# Kali Anonymous System Service Script
+# Location: /usr/local/bin/kali-anonymous
+# Permissions: chmod 755 (root:root)
+
+# --- CONFIGURATION ---
+
+# Destinations to bypass Tor (Local Network)
+NON_TOR="192.168.0.0/16 172.16.0.0/12 10.0.0.0/8"
+
+# Tor User and Ports
+TOR_UID="debian-tor"
+TRANS_PORT="9040"
+DNS_PORT="5353"
+
+# Automation Config
+# Set to "yes" to auto-clean on service stop (WARNING: Deletes logs/cache automatically)
+AUTO_CLEAN="no"
+
+# Processes to kill
+TO_KILL="chrome chromium firefox-esr discord telegram-desktop slack code code-oss skype zoom teams dropbox transmission qbittorrent thunderbird"
+
+# BleachBit Cleaners
+BLEACHBIT_CLEANERS="bash.history system.cache system.clipboard system.recent_documents system.rotated_logs system.tmp system.trash firefox.vacuum firefox.history firefox.cookies"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+# --- FUNCTIONS ---
+
+check_root() {
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "Error: This script must run as root." >&2
+        exit 1
+    fi
+}
+
+check_deps() {
+    local deps="tor macchanger bleachbit curl"
+    for dep in $deps; do
+        if ! command -v $dep &> /dev/null; then
+            echo "Error: $dep is not installed."
+            exit 1
+        fi
+    done
+}
+
+configure_tor() {
+    TORRC="/etc/tor/torrc"
+    if ! grep -q "TransPort $TRANS_PORT" "$TORRC"; then
+        echo "TransPort $TRANS_PORT" >> "$TORRC"
+    fi
+    if ! grep -q "DNSPort $DNS_PORT" "$TORRC"; then
+        echo "DNSPort $DNS_PORT" >> "$TORRC"
+    fi
+    if ! grep -q "VirtualAddrNetwork 10.192.0.0/10" "$TORRC"; then
+        echo "VirtualAddrNetwork 10.192.0.0/10" >> "$TORRC"
+        echo "AutomapHostsOnResolve 1" >> "$TORRC"
+    fi
+}
+
+kill_process() {
+    echo "[*] Killing dangerous processes..."
+    for proc in $TO_KILL; do
+        if pgrep -x "$proc" > /dev/null; then
+            killall -q "$proc"
+        fi
+    done
+}
+
+disable_ipv6() {
+    sysctl -w net.ipv6.conf.all.disable_ipv6=1 > /dev/null
+    sysctl -w net.ipv6.conf.default.disable_ipv6=1 > /dev/null
+    sysctl -w net.ipv6.conf.lo.disable_ipv6=1 > /dev/null
+}
+
+enable_ipv6() {
+    sysctl -w net.ipv6.conf.all.disable_ipv6=0 > /dev/null
+    sysctl -w net.ipv6.conf.default.disable_ipv6=0 > /dev/null
+    sysctl -w net.ipv6.conf.lo.disable_ipv6=0 > /dev/null
+}
+
+change_mac() {
+    # Auto-detect interface
+    IFACE=$(ip -o -4 route show to default | awk '{print $5}' | head -n1)
+    
+    if [ -z "$IFACE" ]; then
+        # Fallback for systemd if network isn't fully up yet or no default route
+        IFACE=$(ip -o link show | awk -F': ' '{print $2}' | grep -v "lo" | head -n1)
+    fi
+
+    if [ -z "$IFACE" ]; then
+        echo "Error: Could not detect network interface."
+        exit 1
+    fi
+
+    echo "[*] Managing MAC for $IFACE"
+    ip link set dev "$IFACE" down
+    
+    if [ "$1" == "restore" ]; then
+        macchanger -p "$IFACE"
+    else
+        macchanger -r "$IFACE"
+    fi
+    
+    ip link set dev "$IFACE" up
+}
+
+change_hostname() {
+    if [ "$1" == "restore" ]; then
+        hostnamectl set-hostname "kali"
+    else
+        NEW_HOSTNAME=$(shuf -n 1 /usr/share/dict/words 2>/dev/null | tr -dc 'a-zA-Z' | tr '[:upper:]' '[:lower:]' | head -c 10)
+        [ -z "$NEW_HOSTNAME" ] && NEW_HOSTNAME="node$(shuf -i 100-999 -n 1)"
+        hostnamectl set-hostname "$NEW_HOSTNAME"
+        sed -i "s/127.0.1.1.*/127.0.1.1\t$NEW_HOSTNAME/g" /etc/hosts
+    fi
+}
+
+start_tor_iptables() {
+    iptables -F
+    iptables -t nat -F
+    echo "nameserver 127.0.0.1" > /etc/resolv.conf
+    iptables -t nat -A OUTPUT -m owner --uid-owner $TOR_UID -j RETURN
+    iptables -t nat -A OUTPUT -p udp --dport 53 -j REDIRECT --to-ports $DNS_PORT
+    iptables -t nat -A OUTPUT -p tcp --dport 53 -j REDIRECT --to-ports $DNS_PORT
+    for NET in $NON_TOR 127.0.0.0/8; do
+        iptables -t nat -A OUTPUT -d "$NET" -j RETURN
+        iptables -A OUTPUT -d "$NET" -j ACCEPT
+    done
+    iptables -t nat -A OUTPUT -p tcp --syn -j REDIRECT --to-ports $TRANS_PORT
+    iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+    iptables -A OUTPUT -m owner --uid-owner $TOR_UID -j ACCEPT
+    iptables -A OUTPUT -j REJECT --reject-with icmp-port-unreachable
+}
+
+flush_iptables() {
+    iptables -F
+    iptables -t nat -F
+    iptables -P INPUT ACCEPT
+    iptables -P OUTPUT ACCEPT
+    iptables -P FORWARD ACCEPT
+}
+
+do_clean() {
+    bleachbit -c $BLEACHBIT_CLEANERS > /dev/null 2>&1
+}
+
+# --- MAIN LOGIC ---
+
+do_start() {
+    check_root
+    check_deps
+    configure_tor
+    
+    echo "[*] Starting Anonymization Service..."
+    
+    kill_process
+    systemctl stop NetworkManager
+    change_mac
+    change_hostname
+    disable_ipv6
+    
+    systemctl start NetworkManager
+    # Wait for network to initialize
+    sleep 5
+    
+    systemctl restart tor
+    start_tor_iptables
+    
+    echo "[+] Anonymization Service Active."
+}
+
+do_stop() {
+    check_root
+    echo "[*] Stopping Anonymization Service..."
+    
+    flush_iptables
+    enable_ipv6
+    
+    systemctl stop NetworkManager
+    change_mac restore
+    change_hostname restore
+    systemctl start NetworkManager
+    
+    # Non-interactive cleaning check
+    if [ "$AUTO_CLEAN" == "yes" ]; then
+        echo "[*] Auto-cleaning system..."
+        do_clean
+    elif [ -t 0 ]; then
+        # Interactive prompt only if running manually in terminal
+        read -p "Run BleachBit cleanup? (y/n) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            do_clean
+        fi
+    fi
+    
+    echo "[+] Anonymization Service Stopped."
+}
+
+do_status() {
+    echo "--- Kali Anonymous Status ---"
+    # Check IP
+    echo -n "External IP: "
+    curl -s --connect-timeout 5 https://ifconfig.me || echo "Unavailable"
+    echo
+    
+    # Check Tor
+    if curl -s --connect-timeout 5 https://check.torproject.org | grep -q "Congratulations"; then
+        echo -e "Tor: ${GREEN}Active${NC}"
+    else
+        echo -e "Tor: ${RED}Inactive${NC}"
+    fi
+    
+    # Mac & Hostname
+    IFACE=$(ip -o -4 route show to default | awk '{print $5}' | head -n1)
+    if [ ! -z "$IFACE" ]; then
+        macchanger -s "$IFACE" | grep "Current"
+    fi
+    echo "Hostname: $(hostname)"
+}
+
+case "$1" in
+    start) do_start ;;
+    stop) do_stop ;;
+    status) do_status ;;
+    restart) do_stop && do_start ;;
+    *) echo "Usage: $0 {start|stop|status|restart}" >&2; exit 3 ;;
+esac
